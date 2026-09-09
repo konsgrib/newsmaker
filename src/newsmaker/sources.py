@@ -149,6 +149,21 @@ class SourceCollector:
 
 _SERPAPI_URL = "https://serpapi.com/search"
 
+# `gl`/`hl` alone only target the Google News *audience* (what a reader in
+# that region would see) -- they do not restrict results to outlets
+# actually based there (confirmed live: regions=["LV","LT","EE"] with only
+# `gl` returned mainstream Russian national outlets, not Baltic ones). To
+# actually restrict to Baltic-*published* sources, this list of major
+# regional outlets is combined into a `site:` OR-filter, the same way
+# GDELT's `sourcecountry:` does it natively. Not exhaustive -- extend as
+# needed; a region missing from this map gets no site restriction (falls
+# back to `gl`/`hl` audience-targeting only).
+_REGION_DOMAINS = {
+    "LV": ["delfi.lv", "rus.lsm.lv", "rus.tvnet.lv", "press.lv"],
+    "LT": ["delfi.lt", "lrt.lt"],
+    "EE": ["delfi.ee", "rus.err.ee", "rus.postimees.ee"],
+}
+
 
 class SerpApiSourceCollector:
     """Finds source articles about a topic via SerpApi's Google News engine.
@@ -207,9 +222,15 @@ class SerpApiSourceCollector:
         return urls
 
     def _search_one_region(self, query: str, *, language: str, geo: str | None) -> list[str]:
+        full_query = query
+        domains = _REGION_DOMAINS.get(geo.upper()) if geo else None
+        if domains:
+            site_filter = " OR ".join(f"site:{domain}" for domain in domains)
+            full_query += f" ({site_filter})"
+
         params = {
             "engine": "google_news",
-            "q": query,
+            "q": full_query,
             "hl": language,
             "api_key": self._api_key,
         }

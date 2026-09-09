@@ -182,15 +182,17 @@ topic, length_words, language="ru", regions=None, tone=None) -> Article`
   observed multi-hour 429s against both a stale IP and a brand new one
   during development). `SerpApiSourceCollector` is a paid drop-in
   alternative (same interface) for when that makes GDELT unusable.
-  `regions` means something subtly different for each: GDELT's
-  `sourcecountry:` filters by where the outlet is *based*; SerpApi's
-  `gl` filters by what Google surfaces for a reader *in* that region
-  (confirmed live: `regions=["LV","LT","EE"]` via SerpApi returned
-  mainstream Russian outlets, not Baltic-based ones — expected and
-  intentional, since the actual goal is Baltic-*audience*-relevant
-  coverage, not Baltic-*published* coverage). Don't switch SerpApi to a
-  source-country filter (e.g. `site:` allowlist) without confirming the
-  goal has changed.
+  `SerpApiSourceCollector` has no native "outlet's country" filter like
+  GDELT's `sourcecountry:` (`gl`/`hl` alone only target the Google News
+  *audience* — confirmed live that `regions=["LV","LT","EE"]` with just
+  `gl` returned mainstream Russian outlets, not Baltic-based ones, which
+  turned out not to be what was wanted). So for `regions` values covered
+  by `_REGION_DOMAINS` in `sources.py` (currently `LV`/`LT`/`EE`), it
+  restricts results with a `site:` OR-filter over a small curated list of
+  major regional outlets, matching GDELT's source-country semantics. A
+  region missing from that map silently falls back to `gl`/`hl`-only
+  (audience) targeting — extend the map rather than relying on that
+  fallback if precise filtering matters for a new region.
 
 Preserve this contract unless a task explicitly requires changing it.
 

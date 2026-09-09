@@ -119,6 +119,34 @@ def test_skips_urls_that_fail_extraction():
     assert [document.url for document in documents] == ["https://example.com/1"]
 
 
+def test_mapped_region_adds_a_site_or_filter():
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen",
+        return_value=_mock_urlopen(_payload()),
+    ) as urlopen:
+        collector = SerpApiSourceCollector(api_key="test-key")
+        collector.collect("news", language="ru", regions=["LV"])
+
+    requested_url = urlopen.call_args.args[0].full_url
+    decoded = urllib.parse.unquote_plus(requested_url)
+    assert "(site:delfi.lv OR site:rus.lsm.lv OR site:rus.tvnet.lv OR site:press.lv)" in decoded
+    assert "gl=lv" in decoded
+
+
+def test_unmapped_region_gets_no_site_filter():
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen",
+        return_value=_mock_urlopen(_payload()),
+    ) as urlopen:
+        collector = SerpApiSourceCollector(api_key="test-key")
+        collector.collect("news", language="en", regions=["ZZ"])
+
+    requested_url = urlopen.call_args.args[0].full_url
+    decoded = urllib.parse.unquote_plus(requested_url)
+    assert "site:" not in decoded
+    assert "gl=zz" in decoded
+
+
 def test_returns_empty_list_when_search_fails():
     with patch(
         "newsmaker.sources.urllib.request.urlopen",
