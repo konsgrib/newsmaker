@@ -102,3 +102,19 @@ class GoogleTrendsRssProvider:
             return ElementTree.fromstring(data)
         except ElementTree.ParseError:
             return None
+
+
+class NullTrendsProvider:
+    """A `TrendsProvider` that never looks anything up.
+
+    Use this to skip the Google Trends step entirely -- e.g. for evergreen
+    topics that rarely show up as an actual Google Trends "trending
+    search", where every real call would just fall back to the raw topic
+    anyway. `Client` doesn't need to know the difference: this still
+    satisfies `TrendsProvider`, so the rest of the pipeline is unaffected.
+    """
+
+    def get_trending_topic(
+        self, topic: str, *, language: str, regions: list[str] | None = None
+    ) -> str | None:
+        return None

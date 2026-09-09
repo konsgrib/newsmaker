@@ -9,7 +9,7 @@ from newsmaker.sources import (
     SourceDocument,
     SourceProvider,
 )
-from newsmaker.trends import GoogleTrendsRssProvider, TrendsProvider
+from newsmaker.trends import GoogleTrendsRssProvider, NullTrendsProvider, TrendsProvider
 
 __all__ = [
     "Article",
@@ -18,6 +18,7 @@ __all__ = [
     "GoogleTrendsRssProvider",
     "NewsmakerError",
     "NoSourcesFoundError",
+    "NullTrendsProvider",
     "SerpApiSourceCollector",
     "SourceCollector",
     "SourceDocument",

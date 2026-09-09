@@ -169,6 +169,13 @@ topic, length_words, language="ru", regions=None, tone=None) -> Article`
   `GenerationError` is raised when the LLM call fails after one retry.
   Both are soft-degradation boundaries, not the only failure points —
   a missing trend match or 1-4 (rather than 5) sources are not errors.
+* `trends_provider` accepts anything satisfying the `TrendsProvider`
+  protocol. The default, `GoogleTrendsRssProvider`, matches `topic`
+  against Google's trending-searches RSS feed. `NullTrendsProvider` is a
+  no-op alternative (always signals no match, skipping the network call)
+  for evergreen topic domains where a real trending match would rarely
+  happen anyway — the pipeline's existing soft-degradation fallback
+  (use the raw topic) makes this a genuine no-op, not a workaround.
 * `source_collector` accepts anything satisfying the `SourceProvider`
   protocol. The default, `SourceCollector`, uses GDELT (free, no key,
   but rate-limits unauthenticated callers hard and unpredictably —

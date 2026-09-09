@@ -58,6 +58,23 @@ article = client.generate_article(
 )
 ```
 
+### Skipping the Google Trends step
+
+For evergreen topics that rarely show up as an actual Google Trends
+"trending search" (e.g. road safety, driving lessons), every real lookup
+just falls back to the raw topic anyway. Pass `NullTrendsProvider` to skip
+the network call entirely:
+
+```python
+from newsmaker import Client, NullTrendsProvider
+
+client = Client(
+    api_key="sk-...",
+    model="gpt-4o-mini",
+    trends_provider=NullTrendsProvider(),
+)
+```
+
 ### Using SerpApi instead of GDELT for source discovery
 
 GDELT (the default) is free and needs no account, but enforces an
