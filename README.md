@@ -78,6 +78,12 @@ client = Client(
 )
 ```
 
+Note `regions` means something different for each collector: GDELT
+filters by where the source outlet is *based*; SerpApi filters by what
+Google surfaces for a reader *in* that region, so e.g.
+`regions=["LV", "LT", "EE"]` can legitimately return mainstream Russian
+outlets that are relevant reading there, not just Baltic-published ones.
+
 `SerpApiSourceCollector`'s `api_key` also falls back to the
 `NEWSMAKER_SERPAPI_KEY` environment variable.
 
