@@ -5,7 +5,7 @@ import urllib.error
 import urllib.parse
 from unittest.mock import MagicMock, patch
 
-from newsmaker.sources import SourceCollector
+from newsmaker.sources import SourceCollector, _extract_text
 
 _GDELT_PAYLOAD = json.dumps(
     {
@@ -157,3 +157,32 @@ def test_language_names_param_extends_defaults_without_replacing_them():
         collector.collect("news", language="ru")  # built-in default still present
         requested_url = urlopen.call_args.args[0].full_url
         assert "sourcelang:russian" in urllib.parse.unquote_plus(requested_url)
+
+
+def test_extract_text_retries_after_a_failed_fetch_then_succeeds():
+    with (
+        patch(
+            "newsmaker.sources.trafilatura.fetch_url",
+            side_effect=[TimeoutError("read timed out"), "<html>ok</html>"],
+        ),
+        patch("newsmaker.sources.trafilatura.extract", return_value="extracted text"),
+        patch("newsmaker.sources.time.sleep") as sleep,
+    ):
+        text = _extract_text("https://example.com/slow")
+
+    assert text == "extracted text"
+    sleep.assert_called_once_with(2.0)
+
+
+def test_extract_text_gives_up_after_max_attempts_without_raising():
+    with (
+        patch(
+            "newsmaker.sources.trafilatura.fetch_url",
+            side_effect=TimeoutError("read timed out"),
+        ),
+        patch("newsmaker.sources.time.sleep") as sleep,
+    ):
+        text = _extract_text("https://example.com/down")
+
+    assert text is None
+    assert sleep.call_count == 2  # retried twice, then gave up (3 attempts total)

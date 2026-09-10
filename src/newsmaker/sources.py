@@ -44,10 +44,27 @@ class SourceProvider(Protocol):
         ...
 
 
+_FETCH_MAX_ATTEMPTS = 3
+_FETCH_RETRY_DELAY_SECONDS = 2.0
+
+
 def _extract_text(url: str) -> str | None:
-    downloaded = trafilatura.fetch_url(url)
+    downloaded = None
+    for attempt in range(1, _FETCH_MAX_ATTEMPTS + 1):
+        try:
+            downloaded = trafilatura.fetch_url(url)
+        except Exception as exc:  # noqa: BLE001 - one bad source must not abort the run
+            logger.debug(
+                "fetch attempt %d/%d failed for %s: %s", attempt, _FETCH_MAX_ATTEMPTS, url, exc
+            )
+            downloaded = None
+        if downloaded:
+            break
+        if attempt < _FETCH_MAX_ATTEMPTS:
+            time.sleep(_FETCH_RETRY_DELAY_SECONDS)
+
     if not downloaded:
-        logger.debug("could not fetch %s", url)
+        logger.debug("could not fetch %s after %d attempt(s)", url, _FETCH_MAX_ATTEMPTS)
         return None
     text = trafilatura.extract(downloaded, favor_recall=True, include_comments=False)
     if not text:
