@@ -116,6 +116,32 @@ client = Client(
 )
 ```
 
+### Extending GDELT's language/country tables
+
+The default `SourceCollector` (GDELT) translates `language`/`regions`
+into GDELT's `sourcelang:`/`sourcecountry:` filter values via small
+built-in tables (e.g. `"ru"` -> `"russian"`, `"LV"` -> `"latvia"`).
+Extend or override them the same way as `SerpApiSourceCollector`'s
+`region_domains` -- merged per key, not a full replacement:
+
+```python
+from newsmaker import Client, SourceCollector
+
+client = Client(
+    api_key="sk-...",
+    model="gpt-4o-mini",
+    source_collector=SourceCollector(
+        language_names={"lv": "latvian"},
+        country_names={"PL": "poland"},
+    ),
+)
+```
+
+A `regions` code missing from `country_names` still works, just less
+precisely: it falls back to the lowercased code itself as GDELT's
+`sourcecountry:` value (e.g. `"pl"` instead of `"poland"`), which may or
+may not match anything.
+
 ### Using SerpApi instead of GDELT for source discovery
 
 GDELT (the default) is free and needs no account, but enforces an

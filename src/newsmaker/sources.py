@@ -91,7 +91,7 @@ _GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 # burst of other traffic (or a previous call from this process) tripped it.
 _RATE_LIMIT_WAIT_SECONDS = 5.0
 
-_SOURCE_LANGUAGE_NAMES = {
+_DEFAULT_SOURCE_LANGUAGE_NAMES = {
     "ru": "russian",
     "en": "english",
 }
@@ -100,7 +100,7 @@ _SOURCE_LANGUAGE_NAMES = {
 # spaces), not the ISO 3166-1 alpha-2 code that `regions` uses elsewhere
 # (that ISO code matches Google Trends' `geo` param, not GDELT's FIPS-ish
 # country codes) -- hence this small translation table.
-_SOURCE_COUNTRY_NAMES = {
+_DEFAULT_SOURCE_COUNTRY_NAMES = {
     "LV": "latvia",
     "LT": "lithuania",
     "EE": "estonia",
@@ -119,6 +119,11 @@ class SourceCollector:
     periods, even from an IP that has never called it before. When that
     makes this provider unusable, pass a `SerpApiSourceCollector` instead;
     both implement the same `SourceProvider` interface.
+
+    `language_names`/`country_names` extend/override the built-in
+    language/country name tables GDELT's `sourcelang:`/`sourcecountry:`
+    filters expect (merged per key, not a full replacement) -- e.g. to
+    add a language or country not already covered.
     """
 
     def __init__(
@@ -127,11 +132,18 @@ class SourceCollector:
         max_sources: int = 5,
         candidate_pool: int = 15,
         timeout: float = 10.0,
+        language_names: dict[str, str] | None = None,
+        country_names: dict[str, str] | None = None,
     ) -> None:
         self._max_sources = max_sources
         self._candidate_pool = candidate_pool
         self._timeout = timeout
         self._ssl_context = ssl.create_default_context(cafile=certifi.where())
+        # `language_names`/`country_names` extend/override the built-in
+        # maps per key, rather than replacing them outright -- same
+        # merge behavior as `SerpApiSourceCollector(region_domains=...)`.
+        self._language_names = {**_DEFAULT_SOURCE_LANGUAGE_NAMES, **(language_names or {})}
+        self._country_names = {**_DEFAULT_SOURCE_COUNTRY_NAMES, **(country_names or {})}
 
     def collect(
         self, query: str, *, language: str, regions: list[str] | None = None
@@ -143,14 +155,12 @@ class SourceCollector:
     def _search(self, query: str, *, language: str, regions: list[str] | None) -> list[str]:
         full_query = query
 
-        source_lang = _SOURCE_LANGUAGE_NAMES.get(language)
+        source_lang = self._language_names.get(language)
         if source_lang:
             full_query += f" sourcelang:{source_lang}"
 
         if regions:
-            country_names = [
-                _SOURCE_COUNTRY_NAMES.get(region, region.lower()) for region in regions
-            ]
+            country_names = [self._country_names.get(region, region.lower()) for region in regions]
             country_filter = " OR ".join(f"sourcecountry:{name}" for name in country_names)
             full_query += f" ({country_filter})"
 

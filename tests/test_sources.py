@@ -117,3 +117,43 @@ def test_unmapped_region_code_falls_back_to_lowercased_code():
     requested_url = urlopen.call_args.args[0].full_url
     decoded = urllib.parse.unquote_plus(requested_url)
     assert "sourcecountry:zz" in decoded
+
+
+def test_country_names_param_extends_defaults_without_replacing_them():
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen", return_value=_mock_urlopen(_GDELT_PAYLOAD)
+    ) as urlopen:
+        collector = SourceCollector(country_names={"PL": "poland"})
+        collector.collect("news", language="en", regions=["LV", "PL"])
+
+    requested_url = urlopen.call_args.args[0].full_url
+    decoded = urllib.parse.unquote_plus(requested_url)
+    assert "(sourcecountry:latvia OR sourcecountry:poland)" in decoded
+
+
+def test_country_names_param_overrides_a_default_entry():
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen", return_value=_mock_urlopen(_GDELT_PAYLOAD)
+    ) as urlopen:
+        collector = SourceCollector(country_names={"LV": "custom-latvia-name"})
+        collector.collect("news", language="en", regions=["LV"])
+
+    requested_url = urlopen.call_args.args[0].full_url
+    decoded = urllib.parse.unquote_plus(requested_url)
+    assert "sourcecountry:custom-latvia-name" in decoded
+    assert "sourcecountry:latvia" not in decoded
+
+
+def test_language_names_param_extends_defaults_without_replacing_them():
+    collector = SourceCollector(language_names={"lv": "latvian"})
+
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen", return_value=_mock_urlopen(_GDELT_PAYLOAD)
+    ) as urlopen:
+        collector.collect("news", language="lv")
+        requested_url = urlopen.call_args.args[0].full_url
+        assert "sourcelang:latvian" in urllib.parse.unquote_plus(requested_url)
+
+        collector.collect("news", language="ru")  # built-in default still present
+        requested_url = urlopen.call_args.args[0].full_url
+        assert "sourcelang:russian" in urllib.parse.unquote_plus(requested_url)

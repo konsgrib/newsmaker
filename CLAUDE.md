@@ -184,8 +184,14 @@ topic, length_words, language="ru", regions=None, tone=None) -> Article`
   protocol. The default, `SourceCollector`, uses GDELT (free, no key,
   but rate-limits unauthenticated callers hard and unpredictably —
   observed multi-hour 429s against both a stale IP and a brand new one
-  during development). `SerpApiSourceCollector` is a paid drop-in
-  alternative (same interface) for when that makes GDELT unusable.
+  during development). It translates `language`/`regions` into GDELT's
+  `sourcelang:`/`sourcecountry:` filter values via small built-in tables;
+  `SourceCollector(language_names={...}, country_names={...})`
+  extends/overrides them per key (same merge pattern as
+  `SerpApiSourceCollector(region_domains=...)` below — keep both in sync
+  if that merge behavior ever changes). `SerpApiSourceCollector` is a
+  paid drop-in alternative (same interface) for when GDELT's rate
+  limiting makes it unusable.
   `SerpApiSourceCollector` has no native "outlet's country" filter like
   GDELT's `sourcecountry:` (`gl`/`hl` alone only target the Google News
   *audience* — confirmed live that `regions=["LV","LT","EE"]` with just
