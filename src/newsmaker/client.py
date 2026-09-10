@@ -1,5 +1,6 @@
 """High-level entry point that runs the topic -> article pipeline."""
 
+import logging
 import os
 
 from newsmaker.exceptions import NoSourcesFoundError
@@ -7,6 +8,8 @@ from newsmaker.llm import ArticleGenerator
 from newsmaker.models import Article
 from newsmaker.sources import SourceCollector, SourceProvider
 from newsmaker.trends import GoogleTrendsRssProvider, TrendsProvider
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -73,18 +76,25 @@ class Client:
         found or extracted, and GenerationError if the LLM call fails after
         one retry.
         """
+        logger.info(
+            "generating article for topic=%r language=%s regions=%s", topic, language, regions
+        )
+
         trending_topic = (
             self._trends_provider.get_trending_topic(topic, language=language, regions=regions)
             or topic
         )
+        logger.info("trending topic resolved to %r", trending_topic)
 
         documents = self._source_collector.collect(
             trending_topic, language=language, regions=regions
         )
         if not documents:
+            logger.warning("no usable sources found for %r", trending_topic)
             raise NoSourcesFoundError(
                 f"No usable source articles were found for {trending_topic!r}"
             )
+        logger.info("collected %d source document(s)", len(documents))
 
         title, body = self._generator.generate(
             trending_topic=trending_topic,
@@ -93,6 +103,7 @@ class Client:
             language=language,
             tone=tone,
         )
+        logger.info("generated article %r (%d word(s))", title, len(body.split()))
 
         return Article(
             title=title,

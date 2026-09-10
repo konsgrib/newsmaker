@@ -105,12 +105,17 @@ def test_stops_once_max_sources_reached_even_with_more_regions():
 
 
 def test_skips_urls_that_fail_extraction():
+    # Extraction now runs concurrently, so `fetch_url`'s behavior must be
+    # keyed by the URL argument, not by call order.
     with (
         patch(
             "newsmaker.sources.urllib.request.urlopen",
             return_value=_mock_urlopen(_payload("https://example.com/1", "https://example.com/2")),
         ),
-        patch("newsmaker.sources.trafilatura.fetch_url", side_effect=["<html/>", None]),
+        patch(
+            "newsmaker.sources.trafilatura.fetch_url",
+            side_effect=lambda url: "<html/>" if url == "https://example.com/1" else None,
+        ),
         patch("newsmaker.sources.trafilatura.extract", return_value="text"),
     ):
         collector = SerpApiSourceCollector(api_key="test-key")
@@ -131,6 +136,38 @@ def test_mapped_region_adds_a_site_or_filter():
     decoded = urllib.parse.unquote_plus(requested_url)
     assert "(site:delfi.lv OR site:rus.lsm.lv OR site:rus.tvnet.lv OR site:press.lv)" in decoded
     assert "gl=lv" in decoded
+
+
+def test_region_domains_param_extends_defaults_without_replacing_them():
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen",
+        return_value=_mock_urlopen(_payload()),
+    ) as urlopen:
+        collector = SerpApiSourceCollector(
+            api_key="test-key", region_domains={"PL": ["example-pl-outlet.pl"]}
+        )
+        collector.collect("news", language="ru", regions=["LV", "PL"])
+
+    requested_urls = [call.args[0].full_url for call in urlopen.call_args_list]
+    decoded = [urllib.parse.unquote_plus(u) for u in requested_urls]
+    assert any("site:delfi.lv" in u for u in decoded)  # built-in default preserved
+    assert any("site:example-pl-outlet.pl" in u for u in decoded)  # new region added
+
+
+def test_region_domains_param_overrides_a_default_region():
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen",
+        return_value=_mock_urlopen(_payload()),
+    ) as urlopen:
+        collector = SerpApiSourceCollector(
+            api_key="test-key", region_domains={"LV": ["custom-outlet.lv"]}
+        )
+        collector.collect("news", language="ru", regions=["LV"])
+
+    requested_url = urlopen.call_args.args[0].full_url
+    decoded = urllib.parse.unquote_plus(requested_url)
+    assert "site:custom-outlet.lv" in decoded
+    assert "site:delfi.lv" not in decoded
 
 
 def test_unmapped_region_gets_no_site_filter():

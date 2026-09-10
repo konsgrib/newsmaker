@@ -1,19 +1,29 @@
 """Source-article discovery (GDELT or SerpApi) and text extraction (trafilatura)."""
 
 import json
+import logging
 import os
 import ssl
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import certifi
 import trafilatura
 
+logger = logging.getLogger(__name__)
+
 _USER_AGENT = "newsmaker/0.1 (+https://pypi.org/project/newsmaker/)"
+
+# Extraction (one HTTP fetch + parse per candidate URL) is I/O-bound, so a
+# small thread pool lets candidates be fetched concurrently instead of one
+# at a time; bounded so a large candidate pool doesn't open too many
+# connections at once.
+_MAX_EXTRACTION_WORKERS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +47,41 @@ class SourceProvider(Protocol):
 def _extract_text(url: str) -> str | None:
     downloaded = trafilatura.fetch_url(url)
     if not downloaded:
+        logger.debug("could not fetch %s", url)
         return None
-    return trafilatura.extract(downloaded, favor_recall=True, include_comments=False)
+    text = trafilatura.extract(downloaded, favor_recall=True, include_comments=False)
+    if not text:
+        logger.debug("trafilatura extracted no text from %s", url)
+    return text
+
+
+def _extract_documents(candidate_urls: list[str], max_documents: int) -> list[SourceDocument]:
+    """Extract text from `candidate_urls` concurrently, stopping once `max_documents`
+    have succeeded. Results preserve the original candidate order."""
+    if not candidate_urls:
+        return []
+
+    documents: list[SourceDocument] = []
+    executor = ThreadPoolExecutor(max_workers=min(_MAX_EXTRACTION_WORKERS, len(candidate_urls)))
+    try:
+        results = zip(candidate_urls, executor.map(_extract_text, candidate_urls), strict=True)
+        for url, text in results:
+            if text:
+                documents.append(SourceDocument(url=url, text=text))
+                if len(documents) >= max_documents:
+                    break
+    finally:
+        # Cancel any candidates not yet started; don't block on ones still
+        # running -- we already have what we need.
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    logger.debug(
+        "extracted %d/%d document(s) from %d candidate(s)",
+        len(documents),
+        max_documents,
+        len(candidate_urls),
+    )
+    return documents
 
 
 _GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
@@ -94,14 +137,8 @@ class SourceCollector:
         self, query: str, *, language: str, regions: list[str] | None = None
     ) -> list[SourceDocument]:
         """Return up to `max_sources` extracted source documents about `query`."""
-        documents: list[SourceDocument] = []
-        for url in self._search(query, language=language, regions=regions):
-            if len(documents) >= self._max_sources:
-                break
-            text = _extract_text(url)
-            if text:
-                documents.append(SourceDocument(url=url, text=text))
-        return documents
+        candidate_urls = self._search(query, language=language, regions=regions)
+        return _extract_documents(candidate_urls, self._max_sources)
 
     def _search(self, query: str, *, language: str, regions: list[str] | None) -> list[str]:
         full_query = query
@@ -126,8 +163,11 @@ class SourceCollector:
         url = f"{_GDELT_URL}?{urllib.parse.urlencode(params)}"
         payload = self._fetch_json(url, retry_on_rate_limit=True)
         if payload is None:
+            logger.warning("GDELT search failed for %r", query)
             return []
-        return [article["url"] for article in payload.get("articles", []) if article.get("url")]
+        urls = [article["url"] for article in payload.get("articles", []) if article.get("url")]
+        logger.debug("GDELT returned %d candidate(s) for %r", len(urls), query)
+        return urls
 
     def _fetch_json(self, url: str, *, retry_on_rate_limit: bool) -> dict[str, Any] | None:
         request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
@@ -138,12 +178,16 @@ class SourceCollector:
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and retry_on_rate_limit:
+                logger.warning(
+                    "GDELT rate-limited us (429), retrying once after %.0fs",
+                    _RATE_LIMIT_WAIT_SECONDS,
+                )
                 time.sleep(_RATE_LIMIT_WAIT_SECONDS)
                 return self._fetch_json(url, retry_on_rate_limit=False)
+            logger.warning("GDELT request failed: HTTP %s", exc.code)
             return None
-        # Python 3.14 made the parentheses around a multi-type except
-        # optional; ruff's formatter removes them for this target version.
-        except urllib.error.URLError, json.JSONDecodeError:
+        except (urllib.error.URLError, json.JSONDecodeError) as exc:
+            logger.warning("GDELT request failed: %s", exc)
             return None
 
 
@@ -155,10 +199,11 @@ _SERPAPI_URL = "https://serpapi.com/search"
 # `gl` returned mainstream Russian national outlets, not Baltic ones). To
 # actually restrict to Baltic-*published* sources, this list of major
 # regional outlets is combined into a `site:` OR-filter, the same way
-# GDELT's `sourcecountry:` does it natively. Not exhaustive -- extend as
-# needed; a region missing from this map gets no site restriction (falls
-# back to `gl`/`hl` audience-targeting only).
-_REGION_DOMAINS = {
+# GDELT's `sourcecountry:` does it natively. Not exhaustive -- extend it
+# via `SerpApiSourceCollector(region_domains=...)`; a region missing from
+# the (merged) map gets no site restriction (falls back to `gl`/`hl`
+# audience-targeting only).
+_DEFAULT_REGION_DOMAINS = {
     "LV": ["delfi.lv", "rus.lsm.lv", "rus.tvnet.lv", "press.lv"],
     "LT": ["delfi.lt", "lrt.lt"],
     "EE": ["delfi.ee", "rus.err.ee", "rus.postimees.ee"],
@@ -187,6 +232,7 @@ class SerpApiSourceCollector:
         max_sources: int = 5,
         candidate_pool_per_region: int = 10,
         timeout: float = 10.0,
+        region_domains: dict[str, list[str]] | None = None,
     ) -> None:
         api_key = api_key or os.environ.get("NEWSMAKER_SERPAPI_KEY")
         if not api_key:
@@ -196,19 +242,16 @@ class SerpApiSourceCollector:
         self._candidate_pool_per_region = candidate_pool_per_region
         self._timeout = timeout
         self._ssl_context = ssl.create_default_context(cafile=certifi.where())
+        # `region_domains` extends/overrides the built-in map per region
+        # key, rather than replacing it outright.
+        self._region_domains = {**_DEFAULT_REGION_DOMAINS, **(region_domains or {})}
 
     def collect(
         self, query: str, *, language: str, regions: list[str] | None = None
     ) -> list[SourceDocument]:
         """Return up to `max_sources` extracted source documents about `query`."""
-        documents: list[SourceDocument] = []
-        for url in self._search(query, language=language, regions=regions):
-            if len(documents) >= self._max_sources:
-                break
-            text = _extract_text(url)
-            if text:
-                documents.append(SourceDocument(url=url, text=text))
-        return documents
+        candidate_urls = self._search(query, language=language, regions=regions)
+        return _extract_documents(candidate_urls, self._max_sources)
 
     def _search(self, query: str, *, language: str, regions: list[str] | None) -> list[str]:
         geos: list[str | None] = list(regions) if regions else [None]
@@ -219,11 +262,12 @@ class SerpApiSourceCollector:
                 if url not in seen:
                     seen.add(url)
                     urls.append(url)
+        logger.debug("SerpApi returned %d candidate(s) for %r", len(urls), query)
         return urls
 
     def _search_one_region(self, query: str, *, language: str, geo: str | None) -> list[str]:
         full_query = query
-        domains = _REGION_DOMAINS.get(geo.upper()) if geo else None
+        domains = self._region_domains.get(geo.upper()) if geo else None
         if domains:
             site_filter = " OR ".join(f"site:{domain}" for domain in domains)
             full_query += f" ({site_filter})"
@@ -239,6 +283,7 @@ class SerpApiSourceCollector:
         url = f"{_SERPAPI_URL}?{urllib.parse.urlencode(params)}"
         payload = self._fetch_json(url)
         if payload is None:
+            logger.warning("SerpApi search failed for %r (geo=%s)", query, geo)
             return []
         links = [
             article["link"] for article in payload.get("news_results", []) if article.get("link")
@@ -252,5 +297,6 @@ class SerpApiSourceCollector:
                 request, timeout=self._timeout, context=self._ssl_context
             ) as response:
                 return json.loads(response.read())
-        except urllib.error.URLError, json.JSONDecodeError:
+        except (urllib.error.URLError, json.JSONDecodeError) as exc:
+            logger.warning("SerpApi request failed: %s", exc)
             return None

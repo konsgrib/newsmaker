@@ -45,20 +45,25 @@ def test_collects_extracted_documents_up_to_max_sources():
 
 
 def test_skips_urls_that_fail_extraction():
+    # Extraction now runs concurrently, so `fetch_url`'s behavior must be
+    # keyed by the URL argument, not by call order (a positional
+    # `side_effect` list isn't safe to consume from multiple threads).
+    fetchable = {"https://example.com/1", "https://example.com/3"}
+
     collector = SourceCollector(max_sources=5)
     with (
         patch(
             "newsmaker.sources.urllib.request.urlopen", return_value=_mock_urlopen(_GDELT_PAYLOAD)
         ),
-        patch("newsmaker.sources.trafilatura.fetch_url", side_effect=["<html/>", None, "<html/>"]),
+        patch(
+            "newsmaker.sources.trafilatura.fetch_url",
+            side_effect=lambda url: "<html/>" if url in fetchable else None,
+        ),
         patch("newsmaker.sources.trafilatura.extract", return_value="extracted text"),
     ):
         documents = collector.collect("python", language="en")
 
-    assert [document.url for document in documents] == [
-        "https://example.com/1",
-        "https://example.com/3",
-    ]
+    assert {document.url for document in documents} == fetchable
 
 
 def test_retries_once_on_rate_limit_then_succeeds():

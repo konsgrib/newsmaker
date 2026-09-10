@@ -5,7 +5,9 @@ Generate an article about the currently trending news angle on a topic.
 Given a topic, target length, and optional tone, `newsmaker`:
 
 1. finds the currently hottest news angle on that topic via Google Trends'
-   public RSS feed (falling back to the topic itself if nothing matches);
+   public RSS feed (falling back to the topic itself if nothing matches,
+   which is the common case for evergreen topics -- see
+   [Skipping the Google Trends step](#skipping-the-google-trends-step));
 2. gathers a handful of source articles about it (via the free GDELT API
    by default, or SerpApi as a paid alternative) and extracts their full
    text with `trafilatura`;
@@ -13,7 +15,10 @@ Given a topic, target length, and optional tone, `newsmaker`:
    LLM -- OpenAI itself, or a local server such as Ollama.
 
 It is a plain Python library, not a network service: install it directly
-into the project that needs it (Django or otherwise).
+into the project that needs it (Django or otherwise). It has no database,
+no task queue, and no built-in async API -- `generate_article` is a
+single blocking call, and running it off the request/response cycle
+(Celery, RQ, a management command, ...) is the calling project's job.
 
 ## Install
 
@@ -26,7 +31,7 @@ dependencies = [
 ]
 ```
 
-## Usage
+## Quick start
 
 ```python
 from newsmaker import Client
@@ -37,12 +42,38 @@ article = client.generate_article("искусственный интеллект
 
 print(article.title)
 print(article.body)
-print(article.sources)  # source URLs used, as metadata only
-print(article.trending_topic)  # the specific trending angle chosen
+print(article.word_count)  # actual word count of the generated body
+print(article.sources)  # source URLs used, as metadata only -- the
+# body itself never cites or links to them
+print(article.trending_topic)  # the specific trending angle chosen, or
+# the topic itself if nothing was trending
+print(article.provider)  # "openai" by default
+print(article.model)  # the model name that generated it
 ```
 
-`generate_article` is a plain, blocking call. Run it off the request/
-response cycle (Celery, RQ, a management command, ...) yourself if needed.
+A more complete example, restricted to a specific region and skipping the
+Google Trends lookup (see the sections below for why you'd want either):
+
+```python
+from newsmaker import Client, NullTrendsProvider, SerpApiSourceCollector
+
+client = Client(
+    api_key="sk-...",
+    model="gpt-4o-mini",
+    trends_provider=NullTrendsProvider(),
+    source_collector=SerpApiSourceCollector(api_key="serpapi-key"),
+)
+
+article = client.generate_article(
+    "ошибки начинающих водителей",
+    length_words=250,
+    language="ru",
+    regions=["LV", "LT", "EE"],
+    tone="нейтральный, информативный",
+)
+```
+
+## Options
 
 ### Restricting to specific regions
 
@@ -57,6 +88,10 @@ article = client.generate_article(
     regions=["LV", "LT", "EE"],
 )
 ```
+
+`regions` behaves slightly differently depending on the active
+`source_collector` -- see
+[Using SerpApi instead of GDELT](#using-serpapi-instead-of-gdelt-for-source-discovery).
 
 ### Skipping the Google Trends step
 
@@ -99,10 +134,19 @@ For `regions` values with no native "filter by outlet's country" option
 (unlike GDELT's `sourcecountry:`), `SerpApiSourceCollector` restricts
 results to a small built-in list of major regional outlets via a `site:`
 filter -- currently covering `LV`, `LT`, and `EE`. A region missing from
-that list (see `_REGION_DOMAINS` in `sources.py`) falls back to
-`gl`/`hl`-only targeting, which picks what's relevant to a reader *in*
-that region rather than what's *published* there -- e.g. mainstream
-Russian national outlets, not just local ones.
+that list falls back to `gl`/`hl`-only targeting, which picks what's
+relevant to a reader *in* that region rather than what's *published*
+there -- e.g. mainstream Russian national outlets, not just local ones.
+
+Extend or override that built-in list with `region_domains` (merged per
+region key, not a full replacement):
+
+```python
+source_collector = SerpApiSourceCollector(
+    api_key="serpapi-key",
+    region_domains={"PL": ["example-outlet.pl"]},  # adds PL, keeps LV/LT/EE
+)
+```
 
 `SerpApiSourceCollector`'s `api_key` also falls back to the
 `NEWSMAKER_SERPAPI_KEY` environment variable.
@@ -119,13 +163,70 @@ client = Client(
 )
 ```
 
-### Configuration
+The prompt asks for a `{"title": ..., "body": ...}` JSON response, which
+is parsed directly when the model complies. Smaller local models are more
+likely to ignore that and just write prose; when that happens, parsing
+falls back to treating the first line as the title -- and if there's no
+line break either, `Article.title` and `Article.body` end up identical
+rather than the call failing. Larger models (tested: `qwen3` family)
+follow the JSON instruction reliably.
 
-`api_key`, `base_url`, and `model` can also be supplied via the
-`NEWSMAKER_API_KEY`, `NEWSMAKER_BASE_URL`, and `NEWSMAKER_MODEL`
-environment variables instead of constructor arguments.
-`SerpApiSourceCollector`'s `api_key` falls back to
-`NEWSMAKER_SERPAPI_KEY` the same way.
+## Command line
+
+For manual testing without writing a script each time:
+
+```bash
+uv run python -m newsmaker \
+    --topic "ошибки начинающих водителей" \
+    --length 250 \
+    --language ru \
+    --regions LV LT EE \
+    --skip-trends \
+    --source-provider serpapi --serpapi-key "$SERPAPI_KEY" \
+    --api-key ollama --base-url http://localhost:11434/v1 --model qwen3.8:27b-mlx
+```
+
+Or, once installed into a project's environment, the shorter `newsmaker
+--topic ... --length ...` (see `[project.scripts]` in `pyproject.toml`).
+Run `newsmaker --help` (or `python -m newsmaker --help`) for the full
+option list -- it mirrors `generate_article`'s parameters plus
+`--skip-trends` (uses `NullTrendsProvider`) and `--source-provider
+{gdelt,serpapi}`.
+
+## Logging
+
+Each module logs under `newsmaker.*` via the standard `logging` module
+(e.g. `newsmaker.sources`, `newsmaker.client`) -- rate limits, failed
+requests, extraction failures, trend matches, and retries. The package
+never calls `logging.basicConfig()` itself (a library shouldn't configure
+global logging); without any handler configured, Python's default
+"last resort" handler still prints `WARNING`-and-above to stderr, which
+is why CLI runs show messages like `GDELT rate-limited us (429)...` with
+no setup. Configure handlers/levels for the `newsmaker` logger in your
+own application to see `INFO`/`DEBUG` messages too.
+
+## Errors
+
+- `NoSourcesFoundError` -- no usable source articles were found or could
+  be extracted for the topic. Zero sources is the only source-related
+  failure; 1-4 (instead of up to 5) is not an error.
+- `GenerationError` -- the LLM call failed on both the initial attempt and
+  one automatic retry.
+
+A missing Google Trends match is not an error: `generate_article` silently
+falls back to the raw topic.
+
+## Configuration
+
+`api_key`, `base_url`, and `model` can also be supplied via environment
+variables instead of constructor arguments:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEWSMAKER_API_KEY` | none | LLM API key (OpenAI, or ignored by most local servers). |
+| `NEWSMAKER_BASE_URL` | OpenAI's default | Base URL of the OpenAI-compatible chat completions endpoint. |
+| `NEWSMAKER_MODEL` | `gpt-4o-mini` | Model name to request. |
+| `NEWSMAKER_SERPAPI_KEY` | none | API key for `SerpApiSourceCollector` (unused by the default GDELT-based collector). |
 
 ## Development
 
@@ -136,5 +237,5 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Tests do not touch the network -- Google Trends, GDELT, and the LLM client
-are mocked.
+Tests do not touch the network -- Google Trends, GDELT, SerpApi, and the
+LLM client are all mocked.

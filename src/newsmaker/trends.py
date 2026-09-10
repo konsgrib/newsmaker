@@ -9,6 +9,7 @@ topic, and reports when nothing matches so the caller can decide how to
 fall back.
 """
 
+import logging
 import ssl
 import urllib.error
 import urllib.request
@@ -16,6 +17,8 @@ from typing import Protocol
 from xml.etree import ElementTree
 
 import certifi
+
+logger = logging.getLogger(__name__)
 
 _RSS_URL = "https://trends.google.com/trending/rss?geo={geo}"
 _RSS_NAMESPACE = {"ht": "https://trends.google.com/trending/rss"}
@@ -68,8 +71,10 @@ class GoogleTrendsRssProvider:
                 continue
             match = self._find_match(root, topic_words)
             if match is not None:
+                logger.debug("trend match for %r in %s: %r", topic, geo, match)
                 return match
 
+        logger.debug("no trend match for %r in %s", topic, geos)
         return None
 
     @staticmethod
@@ -96,11 +101,13 @@ class GoogleTrendsRssProvider:
                 request, timeout=self._timeout, context=self._ssl_context
             ) as response:
                 data = response.read()
-        except urllib.error.URLError:
+        except urllib.error.URLError as exc:
+            logger.warning("Google Trends RSS fetch failed for geo=%s: %s", geo, exc)
             return None
         try:
             return ElementTree.fromstring(data)
-        except ElementTree.ParseError:
+        except ElementTree.ParseError as exc:
+            logger.warning("Google Trends RSS parse failed for geo=%s: %s", geo, exc)
             return None
 
 

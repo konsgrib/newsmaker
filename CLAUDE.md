@@ -35,7 +35,9 @@ database — the calling project owns those concerns.
 
 Use the Python standard library where possible. `urllib`/`xml.etree` are
 used directly for the Google Trends RSS feed and the GDELT API instead of
-adding an HTTP client dependency.
+adding an HTTP client dependency; `argparse` for the CLI; `logging` for
+diagnostics; `concurrent.futures.ThreadPoolExecutor` for the (I/O-bound)
+parallel source-extraction step. None of these need a dependency.
 
 Do not introduce a dependency when the required functionality can be
 implemented cleanly with the standard library.
@@ -51,7 +53,9 @@ src/
     ├── sources.py       # SourceProvider protocol + GDELT/SerpApi impls + extraction
     ├── llm.py          # ArticleGenerator (OpenAI-compatible chat API)
     ├── models.py        # Article result dataclass
-    └── exceptions.py    # NewsmakerError and subclasses
+    ├── exceptions.py    # NewsmakerError and subclasses
+    ├── cli.py           # `python -m newsmaker` / installed `newsmaker` command
+    └── __main__.py       # thin `python -m newsmaker` entry point
 
 tests/
 
@@ -187,12 +191,44 @@ topic, length_words, language="ru", regions=None, tone=None) -> Article`
   *audience* — confirmed live that `regions=["LV","LT","EE"]` with just
   `gl` returned mainstream Russian outlets, not Baltic-based ones, which
   turned out not to be what was wanted). So for `regions` values covered
-  by `_REGION_DOMAINS` in `sources.py` (currently `LV`/`LT`/`EE`), it
-  restricts results with a `site:` OR-filter over a small curated list of
-  major regional outlets, matching GDELT's source-country semantics. A
-  region missing from that map silently falls back to `gl`/`hl`-only
-  (audience) targeting — extend the map rather than relying on that
-  fallback if precise filtering matters for a new region.
+  by its (built-in + caller-supplied, merged) region-domains map
+  (currently `LV`/`LT`/`EE` by default), it restricts results with a
+  `site:` OR-filter over a small curated list of major regional outlets,
+  matching GDELT's source-country semantics. A region missing from that
+  map silently falls back to `gl`/`hl`-only (audience) targeting.
+  `SerpApiSourceCollector(region_domains={...})` extends/overrides the
+  built-in map per region key rather than replacing it outright — prefer
+  that over relying on the audience-only fallback when precise filtering
+  matters for a new region.
+* Both `SourceCollector` and `SerpApiSourceCollector` extract candidate
+  URLs' text concurrently (`concurrent.futures.ThreadPoolExecutor`,
+  shared `_extract_documents` helper in `sources.py`) and stop once
+  `max_sources` documents have succeeded, cancelling not-yet-started
+  extractions rather than waiting for them. This is purely an
+  implementation detail -- `collect()`'s signature and return order
+  (matching candidate order, not completion order) are unchanged. Tests
+  that mock `trafilatura.fetch_url`/`extract` per-URL must key
+  `side_effect` off the URL argument, not off call order — a positional
+  `side_effect` list is not safe to consume from multiple threads.
+* `ArticleGenerator` asks the LLM for a `{"title": ..., "body": ...}`
+  JSON response (in the prompt text only — no `response_format` API
+  parameter, since support for it isn't guaranteed across arbitrary
+  OpenAI-compatible servers) and parses that first. If parsing fails
+  (model ignored the instruction), it falls back to the original
+  "first line is the title" convention. This is strictly a more
+  permissive fallback chain, not a behavior change for models that
+  already didn't respect the old convention.
+* All modules log under `newsmaker.*` via the standard `logging` module
+  (per-module `logging.getLogger(__name__)`); the package never calls
+  `logging.basicConfig()` itself. Don't add print statements for
+  diagnostics — use `logger.debug`/`.info`/`.warning` instead, matching
+  the existing level conventions (`debug` for expected/routine misses,
+  `warning` for failures worth a human's attention, `info` for
+  client.py's top-level pipeline trace).
+* `python -m newsmaker` / the installed `newsmaker` command (`cli.py`,
+  `[project.scripts]` in `pyproject.toml`) is for manual testing, not a
+  supported integration surface for calling projects — those should
+  import `Client` directly.
 
 Preserve this contract unless a task explicitly requires changing it.
 

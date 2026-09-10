@@ -19,7 +19,27 @@ def _fake_client(content: str) -> MagicMock:
     return client
 
 
-def test_splits_title_and_body():
+def test_parses_json_response():
+    generator = ArticleGenerator(
+        api_key="test",
+        base_url=None,
+        model="gpt-4o-mini",
+        client=_fake_client('{"title": "JSON Title", "body": "JSON body text."}'),
+    )
+
+    title, body = generator.generate(
+        trending_topic="python",
+        documents=_DOCUMENTS,
+        length_words=100,
+        language="en",
+        tone=None,
+    )
+
+    assert title == "JSON Title"
+    assert body == "JSON body text."
+
+
+def test_falls_back_to_line_split_when_response_is_not_json():
     generator = ArticleGenerator(
         api_key="test",
         base_url=None,
@@ -37,6 +57,27 @@ def test_splits_title_and_body():
 
     assert title == "Title line"
     assert body == "Body paragraph one."
+
+
+def test_falls_back_to_line_split_when_json_is_missing_a_field():
+    generator = ArticleGenerator(
+        api_key="test",
+        base_url=None,
+        model="gpt-4o-mini",
+        client=_fake_client('{"title": "Only title"}'),
+    )
+
+    title, body = generator.generate(
+        trending_topic="python",
+        documents=_DOCUMENTS,
+        length_words=100,
+        language="en",
+        tone=None,
+    )
+
+    # No newline in the raw content either, so the line-split fallback
+    # degrades to title == body, same as any other single-line response.
+    assert title == body == '{"title": "Only title"}'
 
 
 def test_falls_back_to_title_as_body_when_response_has_one_line():

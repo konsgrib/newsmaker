@@ -5,16 +5,23 @@ same API (e.g. Ollama's `/v1/chat/completions`) -- the only difference is
 the `base_url`/`api_key` passed in.
 """
 
+import json
+import logging
+
 from openai import OpenAI
 
 from newsmaker.exceptions import GenerationError
 from newsmaker.sources import SourceDocument
 
+logger = logging.getLogger(__name__)
+
 _SYSTEM_PROMPT = (
     "You are a news article writer. Write a clear, factual article based "
     "only on the source material you are given. Do not invent facts that "
     "are not supported by the sources. Do not cite, link to, or mention "
-    "the sources by name inside the article."
+    "the sources by name inside the article. Respond with only a single "
+    'JSON object of the form {"title": "...", "body": "..."} -- no '
+    "markdown, no code fences, no text before or after it."
 )
 
 # Keeps the prompt (and cost/context usage) bounded regardless of how much
@@ -61,10 +68,13 @@ class ArticleGenerator:
         )
 
         last_error: Exception | None = None
-        for _attempt in range(_MAX_ATTEMPTS):
+        for attempt in range(_MAX_ATTEMPTS):
             try:
                 return self._complete(prompt)
             except Exception as exc:  # noqa: BLE001 - retried once, then wrapped below
+                logger.warning(
+                    "LLM call failed on attempt %d/%d: %s", attempt + 1, _MAX_ATTEMPTS, exc
+                )
                 last_error = exc
         raise GenerationError(f"LLM generation failed after retry: {last_error}") from last_error
 
@@ -77,10 +87,34 @@ class ArticleGenerator:
             ],
         )
         content = response.choices[0].message.content or ""
-        return self._split_title_and_body(content)
+        return self._parse_json(content) or self._split_title_and_body(content)
+
+    @staticmethod
+    def _parse_json(content: str) -> tuple[str, str] | None:
+        """Parse a `{"title": ..., "body": ...}` response, if the model produced one.
+
+        Not all OpenAI-compatible servers/models reliably follow the JSON
+        instruction in the prompt (no `response_format` API parameter is
+        used here, since support for it varies across local servers) --
+        this returns None rather than raising when parsing doesn't pan
+        out, so the caller can fall back to the plain-text convention.
+        """
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        title, body = data.get("title"), data.get("body")
+        if not isinstance(title, str) or not isinstance(body, str) or not title or not body:
+            return None
+        return title.strip(), body.strip()
 
     @staticmethod
     def _split_title_and_body(content: str) -> tuple[str, str]:
+        """Fallback for a model that ignored the JSON instruction: treat the first
+        line as the title and the rest as the body."""
+        logger.debug("response was not the expected JSON shape, falling back to line-split parsing")
         first_line, _, rest = content.strip().partition("\n")
         title = first_line.lstrip("#").strip()
         body = rest.strip()
@@ -105,8 +139,7 @@ class ArticleGenerator:
             f"Language: {language}\n"
             f"{tone_line}"
             f"Target length: approximately {length_words} words.\n\n"
-            "Write a news article based on the sources below. The first "
-            "line must be the article title only, with no markdown "
-            "formatting. Everything after that is the article body.\n\n"
+            "Write a news article based on the sources below and return "
+            "it as the JSON object described in your instructions.\n\n"
             f"{sources_block}"
         )
