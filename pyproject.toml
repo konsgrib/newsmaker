@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "konsgrib", email = "12676818+konsgrib@users.noreply.github.com" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "certifi>=2026.7.22",
     "openai>=3.10.0",
