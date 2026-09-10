@@ -1,5 +1,7 @@
 # newsmaker
 
+Repository: https://github.com/konsgrib/newsmaker (private)
+
 Generate an article about the currently trending news angle on a topic.
 
 Given a topic, target length, and optional tone, `newsmaker`:
@@ -22,14 +24,18 @@ single blocking call, and running it off the request/response cycle
 
 ## Install
 
-Not published yet. Point a `pyproject.toml` dependency at this repository
-once you are ready to wire it into a project, e.g.:
+Not published to PyPI. Point a `pyproject.toml` dependency at this
+(private) repository once you are ready to wire it into a project, e.g.:
 
 ```toml
 dependencies = [
-    "newsmaker @ git+https://github.com/<you>/newsmaker",
+    "newsmaker @ git+https://github.com/konsgrib/newsmaker",
 ]
 ```
+
+The repository is private, so the consuming project's environment needs
+Git credentials for `github.com/konsgrib` (SSH key or a `gh`-authenticated
+HTTPS credential helper) to install it this way.
 
 ## Quick start
 
