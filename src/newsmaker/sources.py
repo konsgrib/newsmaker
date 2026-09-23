@@ -248,8 +248,11 @@ class SerpApiSourceCollector:
     SerpApi's `gl` (country) and `hl` (language) parameters each take a
     single value, unlike GDELT's `sourcecountry:`/`sourcelang:`, which can
     be OR'd together in one query. So when `regions` has more than one
-    entry, this issues one request per region and merges the results,
-    instead of GDELT's single combined-filter query.
+    entry, this issues one request per region, in order, stopping at the
+    first region that returns any candidates -- later regions are a
+    fallback used only when earlier ones find nothing (e.g.
+    `regions=["LV","LT","EE"]` prefers Latvian sources and only reaches
+    into Lithuania/Estonia when Latvia has no coverage of the topic).
     """
 
     def __init__(
@@ -289,6 +292,8 @@ class SerpApiSourceCollector:
                 if url not in seen:
                     seen.add(url)
                     urls.append(url)
+            if urls:
+                break
         logger.debug("SerpApi returned %d candidate(s) for %r", len(urls), query)
         return urls
 

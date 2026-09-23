@@ -58,7 +58,7 @@ def test_single_request_without_regions():
     assert [document.url for document in documents] == ["https://example.com/1"]
 
 
-def test_queries_each_region_and_merges_deduplicated_results():
+def test_stops_after_first_region_with_results():
     responses = {
         "gl=lv": _payload("https://example.lv/1", "https://shared.example/x"),
         "gl=lt": _payload("https://example.lt/1", "https://shared.example/x"),
@@ -79,14 +79,39 @@ def test_queries_each_region_and_merges_deduplicated_results():
         collector = SerpApiSourceCollector(api_key="test-key", max_sources=10)
         documents = collector.collect("news", language="en", regions=["LV", "LT", "EE"])
 
-    assert urlopen.call_count == 3
+    # LV (the first/preferred region) already returned candidates, so LT
+    # and EE are never queried -- they're a fallback for when LV is empty.
+    assert urlopen.call_count == 1
     urls = [document.url for document in documents]
-    assert urls == [
-        "https://example.lv/1",
-        "https://shared.example/x",
-        "https://example.lt/1",
-        "https://example.ee/1",
-    ]
+    assert urls == ["https://example.lv/1", "https://shared.example/x"]
+
+
+def test_falls_back_to_next_region_when_earlier_is_empty():
+    responses = {
+        "gl=lv": _payload(),
+        "gl=lt": _payload("https://example.lt/1"),
+        "gl=ee": _payload("https://example.ee/1"),
+    }
+
+    def fake_urlopen(request, timeout, context):
+        for marker, body in responses.items():
+            if marker in request.full_url:
+                return _mock_urlopen(body)
+        raise AssertionError(f"unexpected request: {request.full_url}")
+
+    with (
+        patch("newsmaker.sources.urllib.request.urlopen", side_effect=fake_urlopen) as urlopen,
+        patch("newsmaker.sources.trafilatura.fetch_url", return_value="<html/>"),
+        patch("newsmaker.sources.trafilatura.extract", return_value="text"),
+    ):
+        collector = SerpApiSourceCollector(api_key="test-key", max_sources=10)
+        documents = collector.collect("news", language="en", regions=["LV", "LT", "EE"])
+
+    # LV had nothing, so LT was tried next and had results -- EE (a
+    # further fallback) is never reached once LT succeeds.
+    assert urlopen.call_count == 2
+    urls = [document.url for document in documents]
+    assert urls == ["https://example.lt/1"]
 
 
 def test_stops_once_max_sources_reached_even_with_more_regions():
