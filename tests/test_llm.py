@@ -108,6 +108,33 @@ def test_retries_once_then_succeeds():
     assert client.chat.completions.create.call_count == 2
 
 
+def test_raises_generation_error_when_fallback_title_is_too_long():
+    # Malformed single-line JSON (as produced when the model breaks its own
+    # "body" string with an unescaped quote): json.loads fails, so this
+    # degrades to the line-split fallback, and with no newline in the
+    # content the whole ~200+ char blob would become the "title". That's
+    # not a usable headline, so it must fail instead of being returned.
+    bogus_title = "x" * 250
+    content = f'{{"title": "{bogus_title}", "body": "unterminated'
+    client = MagicMock()
+    response = MagicMock()
+    response.choices = [MagicMock(message=MagicMock(content=content))]
+    client.chat.completions.create.return_value = response
+
+    generator = ArticleGenerator(api_key="test", base_url=None, model="gpt-4o-mini", client=client)
+
+    with pytest.raises(GenerationError):
+        generator.generate(
+            trending_topic="python",
+            documents=_DOCUMENTS,
+            length_words=100,
+            language="en",
+            tone=None,
+        )
+
+    assert client.chat.completions.create.call_count == 2
+
+
 def test_raises_generation_error_after_exhausting_retry():
     client = MagicMock()
     client.chat.completions.create.side_effect = RuntimeError("network error")

@@ -31,6 +31,13 @@ _MAX_SOURCE_CHARS = 4000
 # One retry covers a transient network/API error without adding a retry loop.
 _MAX_ATTEMPTS = 2
 
+# A real headline is well under this. A single-line fallback response at or
+# above it usually means the model's JSON was malformed (e.g. an unescaped
+# quote broke the "body" string) and _split_title_and_body grabbed the whole
+# response as the "title" -- that's not a usable article, so it's treated as
+# a failed generation rather than returned as-is.
+_MAX_TITLE_CHARS = 200
+
 
 class ArticleGenerator:
     """Generates an article title and body from a topic and source material."""
@@ -87,7 +94,12 @@ class ArticleGenerator:
             ],
         )
         content = response.choices[0].message.content or ""
-        return self._parse_json(content) or self._split_title_and_body(content)
+        title, body = self._parse_json(content) or self._split_title_and_body(content)
+        if not title or not body or len(title) > _MAX_TITLE_CHARS:
+            raise ValueError(
+                f"model response did not yield a usable title/body (title length={len(title)})"
+            )
+        return title, body
 
     @staticmethod
     def _parse_json(content: str) -> tuple[str, str] | None:
