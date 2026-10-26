@@ -255,8 +255,16 @@ own application to see `INFO`/`DEBUG` messages too.
 ## Errors
 
 - `NoSourcesFoundError` -- no usable source articles were found or could
-  be extracted for the topic. Zero sources is the only source-related
-  failure; 1-4 (instead of up to 5) is not an error.
+  be extracted for the topic. 1-4 (instead of up to 5) sources is not an
+  error.
+- `IrrelevantSourcesError` (a subclass of `NoSourcesFoundError`) -- sources
+  were found, but the model judged that fewer than 2 of them (or than all
+  of them, when fewer were found) are actually about the topic. Source
+  search is keyword-based, so a quiet news week for a broad topic tends to
+  return unrelated stories that merely share a word with it; the model
+  then answers `{"skip": true, "reason": ...}` instead of stitching them
+  into an article. Not retried. Code that already handles
+  `NoSourcesFoundError` (e.g. by trying another topic) covers it.
 - `GenerationError` -- the LLM call failed on both the initial attempt and
   one automatic retry.
 

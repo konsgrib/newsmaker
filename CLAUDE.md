@@ -173,6 +173,13 @@ topic, length_words, language="ru", regions=None, tone=None) -> Article`
   `GenerationError` is raised when the LLM call fails after one retry.
   Both are soft-degradation boundaries, not the only failure points —
   a missing trend match or 1-4 (rather than 5) sources are not errors.
+  `IrrelevantSourcesError` (subclass of `NoSourcesFoundError`, so existing
+  handlers cover it) is raised by `ArticleGenerator` when the model
+  answers `{"skip": true, "reason": ...}`: the prompt asks it to write
+  only from sources actually about the topic and to skip when fewer than
+  `min(2, len(documents))` are. It is not retried (a deliberate answer,
+  not a transient failure). The skip check happens in the same single
+  LLM call as generation -- no extra request.
 * `trends_provider` accepts anything satisfying the `TrendsProvider`
   protocol. The default, `GoogleTrendsRssProvider`, matches `topic`
   against Google's trending-searches RSS feed. `NullTrendsProvider` is a

@@ -10,7 +10,7 @@ import logging
 
 from openai import OpenAI
 
-from newsmaker.exceptions import GenerationError
+from newsmaker.exceptions import GenerationError, IrrelevantSourcesError
 from newsmaker.sources import SourceDocument
 
 logger = logging.getLogger(__name__)
@@ -21,8 +21,18 @@ _SYSTEM_PROMPT = (
     "are not supported by the sources. Do not cite, link to, or mention "
     "the sources by name inside the article. Respond with only a single "
     'JSON object of the form {"title": "...", "body": "..."} -- no '
-    "markdown, no code fences, no text before or after it."
+    "markdown, no code fences, no text before or after it.\n\n"
+    "Source search is keyword-based, so some sources may only share a word "
+    "with the topic without being about it. First decide which sources are "
+    "actually about the topic, and write the article from those alone. If "
+    "fewer of them are about the topic than the minimum stated in the "
+    "request, do not write an article; respond instead with only "
+    '{"skip": true, "reason": "..."}, giving a short reason.'
 )
+
+# Fewer on-topic sources than this (or than the number of sources given,
+# when fewer were found) means there is no real story to write about.
+_MIN_RELEVANT_SOURCES = 2
 
 # Keeps the prompt (and cost/context usage) bounded regardless of how much
 # text trafilatura extracted from a given source page.
@@ -64,7 +74,9 @@ class ArticleGenerator:
     ) -> tuple[str, str]:
         """Return (title, body) for the generated article.
 
-        Raises GenerationError if the request fails on both attempts.
+        Raises IrrelevantSourcesError (not retried) if the model reports
+        that too few sources are about the topic, and GenerationError if
+        the request fails on both attempts.
         """
         prompt = self._build_prompt(
             trending_topic=trending_topic,
@@ -78,6 +90,10 @@ class ArticleGenerator:
         for attempt in range(_MAX_ATTEMPTS):
             try:
                 return self._complete(prompt)
+            except IrrelevantSourcesError:
+                # A deliberate answer about the sources, not a failure --
+                # asking again would only cost another call.
+                raise
             except Exception as exc:  # noqa: BLE001 - retried once, then wrapped below
                 logger.warning(
                     "LLM call failed on attempt %d/%d: %s", attempt + 1, _MAX_ATTEMPTS, exc
@@ -94,12 +110,25 @@ class ArticleGenerator:
             ],
         )
         content = response.choices[0].message.content or ""
+        self._raise_if_skipped(content)
         title, body = self._parse_json(content) or self._split_title_and_body(content)
         if not title or not body or len(title) > _MAX_TITLE_CHARS:
             raise ValueError(
                 f"model response did not yield a usable title/body (title length={len(title)})"
             )
         return title, body
+
+    @staticmethod
+    def _raise_if_skipped(content: str) -> None:
+        """Raise IrrelevantSourcesError for a `{"skip": true, ...}` response."""
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            return
+        if isinstance(data, dict) and data.get("skip") is True:
+            reason = str(data.get("reason") or "").strip() or "no reason given"
+            logger.warning("model skipped the article, sources are off-topic: %s", reason)
+            raise IrrelevantSourcesError(f"Too few sources are about the topic: {reason}")
 
     @staticmethod
     def _parse_json(content: str) -> tuple[str, str] | None:
@@ -146,11 +175,13 @@ class ArticleGenerator:
             for index, document in enumerate(documents, start=1)
         )
         tone_line = f"Tone: {tone}\n" if tone else ""
+        min_relevant = min(_MIN_RELEVANT_SOURCES, len(documents))
         return (
             f"Topic: {trending_topic}\n"
             f"Language: {language}\n"
             f"{tone_line}"
-            f"Target length: approximately {length_words} words.\n\n"
+            f"Target length: approximately {length_words} words.\n"
+            f"Minimum number of sources about the topic: {min_relevant}.\n\n"
             "Write a news article based on the sources below and return "
             "it as the JSON object described in your instructions.\n\n"
             f"{sources_block}"

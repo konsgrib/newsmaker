@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from newsmaker.client import Client
-from newsmaker.exceptions import NoSourcesFoundError
+from newsmaker.exceptions import IrrelevantSourcesError, NoSourcesFoundError
 from newsmaker.sources import SourceDocument
 
 
@@ -108,3 +108,14 @@ def test_regions_are_forwarded_to_trends_and_sources():
     source_collector.collect.assert_called_once_with(
         "trend", language="en", regions=["LV", "LT", "EE"]
     )
+
+
+def test_generate_article_propagates_irrelevant_sources_error():
+    client, generator = _client(
+        trending_result=None,
+        documents=[SourceDocument(url="https://example.com/1", text="Unrelated text.")],
+    )
+    generator.generate.side_effect = IrrelevantSourcesError("off-topic")
+
+    with pytest.raises(NoSourcesFoundError):
+        client.generate_article("car tax", 200)

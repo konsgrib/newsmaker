@@ -9,5 +9,9 @@ class NoSourcesFoundError(NewsmakerError):
     """Raised when no usable source articles could be found or extracted for the topic."""
 
 
+class IrrelevantSourcesError(NoSourcesFoundError):
+    """Raised when sources were found, but too few of them are actually about the topic."""
+
+
 class GenerationError(NewsmakerError):
     """Raised when the LLM failed to produce an article after the configured retry."""
