@@ -184,8 +184,11 @@ Google News ranks results by relevance, not recency, so without a time
 limit an evergreen topic can surface years-old articles. By default
 `SerpApiSourceCollector` only uses news from the last 7 days: it adds
 Google News' `when:7d` operator to the query and drops any result whose
-`iso_date` is older than that. Change the window with `max_age_days`, or
-pass `max_age_days=None` to disable it:
+`iso_date` is older than that. Google's date can be a re-crawl or update
+date, though (a 2018 article has been seen reported as two days old), so
+after extraction a source whose own page metadata dates it before the
+window is dropped as well; sources without a page date are kept. Change
+the window with `max_age_days`, or pass `max_age_days=None` to disable it:
 
 ```python
 source_collector = SerpApiSourceCollector(api_key="serpapi-key", max_age_days=3)
@@ -255,8 +258,16 @@ own application to see `INFO`/`DEBUG` messages too.
 ## Errors
 
 - `NoSourcesFoundError` -- no usable source articles were found or could
-  be extracted for the topic. Zero sources is the only source-related
-  failure; 1-4 (instead of up to 5) is not an error.
+  be extracted for the topic. 1-4 (instead of up to 5) sources is not an
+  error.
+- `IrrelevantSourcesError` (a subclass of `NoSourcesFoundError`) -- sources
+  were found, but the model judged that fewer than 2 of them (or than all
+  of them, when fewer were found) are actually about the topic. Source
+  search is keyword-based, so a quiet news week for a broad topic tends to
+  return unrelated stories that merely share a word with it; the model
+  then answers `{"skip": true, "reason": ...}` instead of stitching them
+  into an article. Not retried. Code that already handles
+  `NoSourcesFoundError` (e.g. by trying another topic) covers it.
 - `GenerationError` -- the LLM call failed on both the initial attempt and
   one automatic retry.
 

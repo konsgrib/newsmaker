@@ -3,7 +3,7 @@
 import json
 import urllib.error
 import urllib.parse
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -328,3 +328,58 @@ def test_region_with_only_stale_results_falls_back_to_next_region():
 def test_rejects_non_positive_max_age_days(max_age_days):
     with pytest.raises(ValueError):
         SerpApiSourceCollector(api_key="test-key", max_age_days=max_age_days)
+
+
+def _page_dates(dates_by_url: dict[str, str | None]):
+    """Patch trafilatura's page metadata so each URL reports the given date."""
+
+    def fake_extract_metadata(downloaded):
+        return MagicMock(date=dates_by_url[downloaded])
+
+    return patch("newsmaker.sources.trafilatura.extract_metadata", fake_extract_metadata)
+
+
+def test_drops_sources_whose_page_metadata_is_older_than_max_age_days():
+    # Google reports all three as recent; only the page itself knows the
+    # first one is a years-old article that was merely re-crawled.
+    body = _dated_payload(
+        ("https://example.com/old", _iso_days_ago(1)),
+        ("https://example.com/fresh", _iso_days_ago(1)),
+        ("https://example.com/undated", _iso_days_ago(1)),
+    )
+    page_dates = {
+        "https://example.com/old": (date.today() - timedelta(days=400)).isoformat(),
+        "https://example.com/fresh": (date.today() - timedelta(days=2)).isoformat(),
+        "https://example.com/undated": None,
+    }
+    with (
+        patch("newsmaker.sources.urllib.request.urlopen", return_value=_mock_urlopen(body)),
+        # fetch_url returns the URL itself, so the metadata fake can key off it.
+        patch("newsmaker.sources.trafilatura.fetch_url", side_effect=lambda url: url),
+        patch("newsmaker.sources.trafilatura.extract", return_value="text"),
+        _page_dates(page_dates),
+    ):
+        collector = SerpApiSourceCollector(api_key="test-key", max_sources=10)
+        documents = collector.collect("news", language="en")
+
+    assert [document.url for document in documents] == [
+        "https://example.com/fresh",
+        "https://example.com/undated",
+    ]
+    assert documents[0].published == date.today() - timedelta(days=2)
+    assert documents[1].published is None
+
+
+def test_page_date_filter_is_disabled_with_max_age_days_none():
+    body = _dated_payload(("https://example.com/old", None))
+    old = (date.today() - timedelta(days=400)).isoformat()
+    with (
+        patch("newsmaker.sources.urllib.request.urlopen", return_value=_mock_urlopen(body)),
+        patch("newsmaker.sources.trafilatura.fetch_url", side_effect=lambda url: url),
+        patch("newsmaker.sources.trafilatura.extract", return_value="text"),
+        _page_dates({"https://example.com/old": old}),
+    ):
+        collector = SerpApiSourceCollector(api_key="test-key", max_age_days=None)
+        documents = collector.collect("news", language="en")
+
+    assert [document.url for document in documents] == ["https://example.com/old"]
