@@ -3,6 +3,7 @@
 import json
 import urllib.error
 import urllib.parse
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -218,3 +219,112 @@ def test_returns_empty_list_when_search_fails():
         documents = collector.collect("news", language="en")
 
     assert documents == []
+
+
+def _dated_payload(*articles: tuple[str, str | None]) -> bytes:
+    results = []
+    for link, iso_date in articles:
+        result = {"link": link}
+        if iso_date is not None:
+            result["iso_date"] = iso_date
+        results.append(result)
+    return json.dumps({"news_results": results}).encode()
+
+
+def _iso_days_ago(days: int) -> str:
+    moment = datetime.now(UTC) - timedelta(days=days)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_query_is_limited_to_recent_news_by_default():
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen",
+        return_value=_mock_urlopen(_payload()),
+    ) as urlopen:
+        collector = SerpApiSourceCollector(api_key="test-key")
+        collector.collect("news", language="ru", regions=["LV"])
+
+    decoded = urllib.parse.unquote_plus(urlopen.call_args.args[0].full_url)
+    assert "site:press.lv) when:7d" in decoded
+
+
+def test_max_age_days_sets_the_when_operator():
+    with patch(
+        "newsmaker.sources.urllib.request.urlopen",
+        return_value=_mock_urlopen(_payload()),
+    ) as urlopen:
+        collector = SerpApiSourceCollector(api_key="test-key", max_age_days=2)
+        collector.collect("news", language="en")
+
+    decoded = urllib.parse.unquote_plus(urlopen.call_args.args[0].full_url)
+    assert "q=news when:2d" in decoded
+
+
+def test_max_age_days_none_disables_the_time_limit():
+    body = _dated_payload(("https://example.com/old", _iso_days_ago(400)))
+    with (
+        patch(
+            "newsmaker.sources.urllib.request.urlopen", return_value=_mock_urlopen(body)
+        ) as urlopen,
+        patch("newsmaker.sources.trafilatura.fetch_url", return_value="<html/>"),
+        patch("newsmaker.sources.trafilatura.extract", return_value="text"),
+    ):
+        collector = SerpApiSourceCollector(api_key="test-key", max_age_days=None)
+        documents = collector.collect("news", language="en")
+
+    decoded = urllib.parse.unquote_plus(urlopen.call_args.args[0].full_url)
+    assert "when:" not in decoded
+    assert [document.url for document in documents] == ["https://example.com/old"]
+
+
+def test_drops_results_older_than_max_age_days():
+    body = _dated_payload(
+        ("https://example.com/old", _iso_days_ago(30)),
+        ("https://example.com/fresh", _iso_days_ago(1)),
+        ("https://example.com/undated", None),
+        ("https://example.com/garbled", "not a date"),
+    )
+    with (
+        patch("newsmaker.sources.urllib.request.urlopen", return_value=_mock_urlopen(body)),
+        patch("newsmaker.sources.trafilatura.fetch_url", return_value="<html/>"),
+        patch("newsmaker.sources.trafilatura.extract", return_value="text"),
+    ):
+        collector = SerpApiSourceCollector(api_key="test-key", max_sources=10)
+        documents = collector.collect("news", language="en")
+
+    # Only the explicitly stale result is dropped; results without a usable
+    # `iso_date` are kept, relying on the `when:` query operator alone.
+    assert [document.url for document in documents] == [
+        "https://example.com/fresh",
+        "https://example.com/undated",
+        "https://example.com/garbled",
+    ]
+
+
+def test_region_with_only_stale_results_falls_back_to_next_region():
+    responses = {
+        "gl=lv": _dated_payload(("https://example.lv/old", _iso_days_ago(90))),
+        "gl=lt": _dated_payload(("https://example.lt/fresh", _iso_days_ago(1))),
+    }
+
+    def fake_urlopen(request, timeout, context):
+        for marker, body in responses.items():
+            if marker in request.full_url:
+                return _mock_urlopen(body)
+        raise AssertionError(f"unexpected request: {request.full_url}")
+
+    with (
+        patch("newsmaker.sources.urllib.request.urlopen", side_effect=fake_urlopen),
+        patch("newsmaker.sources.trafilatura.fetch_url", return_value="<html/>"),
+        patch("newsmaker.sources.trafilatura.extract", return_value="text"),
+    ):
+        collector = SerpApiSourceCollector(api_key="test-key")
+        documents = collector.collect("news", language="en", regions=["LV", "LT"])
+
+    assert [document.url for document in documents] == ["https://example.lt/fresh"]
+
+
+@pytest.mark.parametrize("max_age_days", [0, -1])
+def test_rejects_non_positive_max_age_days(max_age_days):
+    with pytest.raises(ValueError):
+        SerpApiSourceCollector(api_key="test-key", max_age_days=max_age_days)
