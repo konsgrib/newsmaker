@@ -7,6 +7,7 @@ the `base_url`/`api_key` passed in.
 
 import json
 import logging
+from datetime import date
 
 from openai import OpenAI
 
@@ -27,7 +28,12 @@ _SYSTEM_PROMPT = (
     "actually about the topic, and write the article from those alone. If "
     "fewer of them are about the topic than the minimum stated in the "
     "request, do not write an article; respond instead with only "
-    '{"skip": true, "reason": "..."}, giving a short reason.'
+    '{"skip": true, "reason": "..."}, giving a short reason.\n\n'
+    "The request states today's date and, where known, each source's "
+    "publication date. Write about what the sources report as recent: "
+    "events, decisions and changes from around their publication date. "
+    "Older rules or events mentioned as background may be given as "
+    "context, with their dates, but never present them as new."
 )
 
 # Fewer on-topic sources than this (or than the number of sources given,
@@ -171,12 +177,13 @@ class ArticleGenerator:
         tone: str | None,
     ) -> str:
         sources_block = "\n\n".join(
-            f"Source {index}:\n{document.text[:_MAX_SOURCE_CHARS]}"
+            f"Source {index}{_published_label(document)}:\n{document.text[:_MAX_SOURCE_CHARS]}"
             for index, document in enumerate(documents, start=1)
         )
         tone_line = f"Tone: {tone}\n" if tone else ""
         min_relevant = min(_MIN_RELEVANT_SOURCES, len(documents))
         return (
+            f"Today's date: {date.today().isoformat()}\n"
             f"Topic: {trending_topic}\n"
             f"Language: {language}\n"
             f"{tone_line}"
@@ -186,3 +193,7 @@ class ArticleGenerator:
             "it as the JSON object described in your instructions.\n\n"
             f"{sources_block}"
         )
+
+
+def _published_label(document: SourceDocument) -> str:
+    return f" (published {document.published.isoformat()})" if document.published else ""

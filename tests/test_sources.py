@@ -3,9 +3,10 @@
 import json
 import urllib.error
 import urllib.parse
+from datetime import date
 from unittest.mock import MagicMock, patch
 
-from newsmaker.sources import SourceCollector, _extract_text
+from newsmaker.sources import SourceCollector, SourceDocument, _extract_document, _extract_text
 
 _GDELT_PAYLOAD = json.dumps(
     {
@@ -186,3 +187,34 @@ def test_extract_text_gives_up_after_max_attempts_without_raising():
 
     assert text is None
     assert sleep.call_count == 2  # retried twice, then gave up (3 attempts total)
+
+
+def test_extract_document_reads_the_publication_date_from_page_metadata():
+    with (
+        patch("newsmaker.sources.trafilatura.fetch_url", return_value="<html/>"),
+        patch("newsmaker.sources.trafilatura.extract", return_value="text"),
+        patch(
+            "newsmaker.sources.trafilatura.extract_metadata",
+            return_value=MagicMock(date="2025-12-01"),
+        ),
+    ):
+        document = _extract_document("https://example.com/1")
+
+    assert document == SourceDocument(
+        url="https://example.com/1", text="text", published=date(2025, 12, 1)
+    )
+
+
+def test_extract_document_keeps_the_source_when_the_date_cannot_be_read():
+    with (
+        patch("newsmaker.sources.trafilatura.fetch_url", return_value="<html/>"),
+        patch("newsmaker.sources.trafilatura.extract", return_value="text"),
+        patch(
+            "newsmaker.sources.trafilatura.extract_metadata",
+            side_effect=ValueError("broken metadata"),
+        ),
+    ):
+        document = _extract_document("https://example.com/1")
+
+    assert document is not None
+    assert document.published is None

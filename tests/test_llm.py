@@ -1,5 +1,6 @@
 """Tests for ArticleGenerator. Uses an injected fake OpenAI-compatible client."""
 
+from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
@@ -247,3 +248,28 @@ def test_minimum_is_capped_at_the_number_of_sources_found():
 
     _, user = _sent_messages(client)
     assert "Minimum number of sources about the topic: 1." in user["content"]
+
+
+def test_prompt_gives_todays_date_and_each_sources_publication_date():
+    client = _fake_client('{"title": "T", "body": "B"}')
+    generator = ArticleGenerator(api_key="test", base_url=None, model="gpt-4o-mini", client=client)
+    documents = [
+        SourceDocument(
+            url="https://example.com/1", text="Tyre prices rose.", published=date(2026, 10, 23)
+        ),
+        SourceDocument(url="https://example.com/2", text="Undated text."),
+    ]
+
+    generator.generate(
+        trending_topic="winter tyres",
+        documents=documents,
+        length_words=100,
+        language="en",
+        tone=None,
+    )
+
+    system, user = _sent_messages(client)
+    assert "never present them as new" in system["content"]
+    assert f"Today's date: {date.today().isoformat()}" in user["content"]
+    assert "Source 1 (published 2026-10-23):\nTyre prices rose." in user["content"]
+    assert "Source 2:\nUndated text." in user["content"]

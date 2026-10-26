@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
 
 import certifi
@@ -29,10 +29,16 @@ _MAX_EXTRACTION_WORKERS = 5
 
 @dataclass(frozen=True, slots=True)
 class SourceDocument:
-    """Full text extracted from one source article."""
+    """Full text extracted from one source article.
+
+    `published` is the publication date from the page's own metadata, when
+    it has one -- unlike a search engine's date for the result, which can
+    be a re-crawl or update date for an article that is years old.
+    """
 
     url: str
     text: str
+    published: date | None = None
 
 
 class SourceProvider(Protocol):
@@ -50,6 +56,11 @@ _FETCH_RETRY_DELAY_SECONDS = 2.0
 
 
 def _extract_text(url: str) -> str | None:
+    document = _extract_document(url)
+    return document.text if document else None
+
+
+def _extract_document(url: str) -> SourceDocument | None:
     downloaded = None
     for attempt in range(1, _FETCH_MAX_ATTEMPTS + 1):
         try:
@@ -70,24 +81,43 @@ def _extract_text(url: str) -> str | None:
     text = trafilatura.extract(downloaded, favor_recall=True, include_comments=False)
     if not text:
         logger.debug("trafilatura extracted no text from %s", url)
-    return text
+        return None
+    return SourceDocument(url=url, text=text, published=_published_date(downloaded, url))
 
 
-def _extract_documents(candidate_urls: list[str], max_documents: int) -> list[SourceDocument]:
+def _published_date(downloaded: str, url: str) -> date | None:
+    try:
+        metadata = trafilatura.extract_metadata(downloaded)
+        return date.fromisoformat(metadata.date) if metadata and metadata.date else None
+    except Exception as exc:  # noqa: BLE001 - a missing date must not drop the source
+        logger.debug("could not read the publication date of %s: %s", url, exc)
+        return None
+
+
+def _extract_documents(
+    candidate_urls: list[str], max_documents: int, *, published_since: date | None = None
+) -> list[SourceDocument]:
     """Extract text from `candidate_urls` concurrently, stopping once `max_documents`
-    have succeeded. Results preserve the original candidate order."""
+    have succeeded. Results preserve the original candidate order.
+
+    With `published_since`, documents whose page metadata dates them earlier
+    are skipped (documents without a date are kept)."""
     if not candidate_urls:
         return []
 
     documents: list[SourceDocument] = []
     executor = ThreadPoolExecutor(max_workers=min(_MAX_EXTRACTION_WORKERS, len(candidate_urls)))
     try:
-        results = zip(candidate_urls, executor.map(_extract_text, candidate_urls), strict=True)
-        for url, text in results:
-            if text:
-                documents.append(SourceDocument(url=url, text=text))
-                if len(documents) >= max_documents:
-                    break
+        results = executor.map(_extract_document, candidate_urls)
+        for document in results:
+            if document is None:
+                continue
+            if published_since and document.published and document.published < published_since:
+                logger.debug("skipping %s: published %s", document.url, document.published)
+                continue
+            documents.append(document)
+            if len(documents) >= max_documents:
+                break
     finally:
         # Cancel any candidates not yet started; don't block on ones still
         # running -- we already have what we need.
@@ -260,7 +290,10 @@ class SerpApiSourceCollector:
     evergreen query happily returns years-old articles. `max_age_days`
     adds Google News' `when:<N>d` operator to the query and also drops
     any result whose `iso_date` is older than that (results without a
-    parseable `iso_date` are kept, relying on `when:` alone). Pass
+    parseable `iso_date` are kept, relying on `when:` alone). Google's date
+    can be a re-crawl or update date, though (seen live: a 2018 article
+    reported as two days old), so after extraction a source whose own
+    page metadata dates it before the window is dropped too. Pass
     `max_age_days=None` to disable the limit.
     """
 
@@ -294,7 +327,12 @@ class SerpApiSourceCollector:
     ) -> list[SourceDocument]:
         """Return up to `max_sources` extracted source documents about `query`."""
         candidate_urls = self._search(query, language=language, regions=regions)
-        return _extract_documents(candidate_urls, self._max_sources)
+        published_since = None
+        if self._max_age_days is not None:
+            published_since = (datetime.now(UTC) - timedelta(days=self._max_age_days)).date()
+        return _extract_documents(
+            candidate_urls, self._max_sources, published_since=published_since
+        )
 
     def _search(self, query: str, *, language: str, regions: list[str] | None) -> list[str]:
         geos: list[str | None] = list(regions) if regions else [None]

@@ -219,7 +219,14 @@ topic, length_words, language="ru", regions=None, tone=None) -> Article`
   `when:<N>d` operator and results with an older `iso_date` are dropped
   (results without a parseable `iso_date` are kept). `None` disables it.
   A region whose results are all stale counts as empty for the
-  region-fallback rule above.
+  region-fallback rule above. Google's date can be a re-crawl date for an
+  old article, so after extraction sources whose page metadata date
+  (`trafilatura.extract_metadata`, stored as `SourceDocument.published`)
+  is older than the window are dropped too (undated ones are kept); this
+  happens after the region choice, so it never triggers the region
+  fallback. `ArticleGenerator` puts today's date and each source's
+  `published` date in the prompt and tells the model not to present
+  background rules/events as new.
 * Both `SourceCollector` and `SerpApiSourceCollector` extract candidate
   URLs' text concurrently (`concurrent.futures.ThreadPoolExecutor`,
   shared `_extract_documents` helper in `sources.py`) and stop once
