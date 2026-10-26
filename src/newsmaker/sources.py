@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import certifi
@@ -253,6 +254,14 @@ class SerpApiSourceCollector:
     fallback used only when earlier ones find nothing (e.g.
     `regions=["LV","LT","EE"]` prefers Latvian sources and only reaches
     into Lithuania/Estonia when Latvia has no coverage of the topic).
+
+    Google News ranks by relevance, not recency, and SerpApi's date sort
+    (`so=1`) can't be combined with `q` -- so without a time limit an
+    evergreen query happily returns years-old articles. `max_age_days`
+    adds Google News' `when:<N>d` operator to the query and also drops
+    any result whose `iso_date` is older than that (results without a
+    parseable `iso_date` are kept, relying on `when:` alone). Pass
+    `max_age_days=None` to disable the limit.
     """
 
     def __init__(
@@ -263,7 +272,11 @@ class SerpApiSourceCollector:
         candidate_pool_per_region: int = 10,
         timeout: float = 10.0,
         region_domains: dict[str, list[str]] | None = None,
+        max_age_days: int | None = 7,
     ) -> None:
+        if max_age_days is not None and max_age_days < 1:
+            raise ValueError("max_age_days must be a positive number of days or None")
+        self._max_age_days = max_age_days
         api_key = api_key or os.environ.get("NEWSMAKER_SERPAPI_KEY")
         if not api_key:
             raise ValueError("api_key is required (directly or via NEWSMAKER_SERPAPI_KEY)")
@@ -303,6 +316,8 @@ class SerpApiSourceCollector:
         if domains:
             site_filter = " OR ".join(f"site:{domain}" for domain in domains)
             full_query += f" ({site_filter})"
+        if self._max_age_days is not None:
+            full_query += f" when:{self._max_age_days}d"
 
         params = {
             "engine": "google_news",
@@ -318,9 +333,26 @@ class SerpApiSourceCollector:
             logger.warning("SerpApi search failed for %r (geo=%s)", query, geo)
             return []
         links = [
-            article["link"] for article in payload.get("news_results", []) if article.get("link")
+            article["link"]
+            for article in payload.get("news_results", [])
+            if article.get("link") and self._is_recent(article)
         ]
         return links[: self._candidate_pool_per_region]
+
+    def _is_recent(self, article: dict[str, Any]) -> bool:
+        if self._max_age_days is None:
+            return True
+        try:
+            published = datetime.fromisoformat(article["iso_date"])
+        except (KeyError, TypeError, ValueError):
+            return True
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=UTC)
+        cutoff = datetime.now(UTC) - timedelta(days=self._max_age_days)
+        if published < cutoff:
+            logger.debug("skipping %s: published %s", article["link"], article["iso_date"])
+            return False
+        return True
 
     def _fetch_json(self, url: str) -> dict[str, Any] | None:
         request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})

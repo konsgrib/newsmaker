@@ -180,6 +180,21 @@ source_collector = SerpApiSourceCollector(
 )
 ```
 
+Google News ranks results by relevance, not recency, so without a time
+limit an evergreen topic can surface years-old articles. By default
+`SerpApiSourceCollector` only uses news from the last 7 days: it adds
+Google News' `when:7d` operator to the query and drops any result whose
+`iso_date` is older than that. Change the window with `max_age_days`, or
+pass `max_age_days=None` to disable it:
+
+```python
+source_collector = SerpApiSourceCollector(api_key="serpapi-key", max_age_days=3)
+```
+
+When no region has news that recent, `collect()` returns no documents and
+`generate_article` raises `NoSourcesFoundError`, as for any topic without
+coverage.
+
 `SerpApiSourceCollector`'s `api_key` also falls back to the
 `NEWSMAKER_SERPAPI_KEY` environment variable.
 
