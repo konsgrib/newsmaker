@@ -164,7 +164,7 @@ def test_skip_response_raises_irrelevant_sources_error_without_retry():
     client = _fake_client('{"skip": true, "reason": "Sources are about taxis, not car tax."}')
     generator = ArticleGenerator(api_key="test", base_url=None, model="gpt-4o-mini", client=client)
 
-    with pytest.raises(IrrelevantSourcesError, match="taxis, not car tax"):
+    with pytest.raises(IrrelevantSourcesError, match="taxis, not car tax") as exc_info:
         generator.generate(
             trending_topic="car tax",
             documents=_TWO_DOCUMENTS,
@@ -173,6 +173,7 @@ def test_skip_response_raises_irrelevant_sources_error_without_retry():
             tone=None,
         )
 
+    assert exc_info.value.reason == "Sources are about taxis, not car tax."
     # A skip is a deliberate answer, not a transient failure.
     assert client.chat.completions.create.call_count == 1
 

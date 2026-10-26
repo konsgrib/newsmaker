@@ -134,7 +134,7 @@ class ArticleGenerator:
         if isinstance(data, dict) and data.get("skip") is True:
             reason = str(data.get("reason") or "").strip() or "no reason given"
             logger.warning("model skipped the article, sources are off-topic: %s", reason)
-            raise IrrelevantSourcesError(f"Too few sources are about the topic: {reason}")
+            raise IrrelevantSourcesError(reason)
 
     @staticmethod
     def _parse_json(content: str) -> tuple[str, str] | None:

@@ -10,7 +10,14 @@ class NoSourcesFoundError(NewsmakerError):
 
 
 class IrrelevantSourcesError(NoSourcesFoundError):
-    """Raised when sources were found, but too few of them are actually about the topic."""
+    """Raised when sources were found, but too few of them are actually about the topic.
+
+    `reason` is the model's own short explanation, for showing to a human.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"Too few sources are about the topic: {reason}")
 
 
 class GenerationError(NewsmakerError):
